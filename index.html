@@ -1,0 +1,885 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SignBridge — ASL Video Call</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600&family=Playfair+Display:ital,wght@0,700;1,500&display=swap" rel="stylesheet">
+
+<!--
+  RELIABLE CDN STACK — tested on GitHub Pages
+  - PeerJS 1.5.4 from jsDelivr (faster, no rate limit issues)
+  - TF.js 4.11.0 from jsdelivr (stable, works on HTTPS)
+  - Handpose from jsdelivr (avoids googleapis.com blocks)
+  - Fingerpose from jsdelivr
+-->
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.11.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/handpose@0.0.7/dist/handpose.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/fingerpose@0.1.0/dist/fingerpose.min.js"></script>
+
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#08080b;--surface:#111115;--panel:#15151b;
+  --border:rgba(255,255,255,0.07);
+  --white:#efecea;--muted:rgba(239,236,234,0.42);
+  --green:#3dffa0;--blue:#3db8ff;--red:#ff5272;--r:14px;
+}
+html,body{height:100%}
+body{font-family:'Sora',sans-serif;background:var(--bg);color:var(--white);display:flex;flex-direction:column;min-height:100vh;overflow-x:hidden}
+
+/* ── Loader ── */
+#loader{position:fixed;inset:0;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;z-index:500;transition:opacity .5s}
+#loader.out{opacity:0;pointer-events:none}
+.llo{font-family:'Playfair Display',serif;font-size:1.9rem;letter-spacing:-.02em}
+.llo span{color:var(--green)}
+.ring{width:50px;height:50px;border:3px solid rgba(61,255,160,.1);border-top-color:var(--green);border-radius:50%;animation:spin .9s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.lsteps{display:flex;flex-direction:column;gap:7px}
+.ls{font-size:.74rem;color:rgba(239,236,234,.2);display:flex;align-items:center;gap:8px;transition:color .3s}
+.ls::before{content:'';width:5px;height:5px;border-radius:50%;background:currentColor;flex-shrink:0}
+.ls.go{color:var(--white)}.ls.ok{color:var(--green)}
+.lnote{font-size:.72rem;color:var(--muted);max-width:290px;text-align:center;line-height:1.65}
+/* retry button shown on error */
+.retry-btn{padding:9px 22px;border-radius:100px;border:1px solid var(--green);background:transparent;color:var(--green);font-family:'Sora',sans-serif;font-size:.82rem;cursor:pointer;display:none;transition:all .2s}
+.retry-btn:hover{background:rgba(61,255,160,.1)}
+.retry-btn.show{display:block}
+
+/* ── Header ── */
+header{display:flex;align-items:center;justify-content:space-between;padding:13px 24px;border-bottom:1px solid var(--border);position:sticky;top:0;z-index:20;background:rgba(8,8,11,.88);backdrop-filter:blur(12px)}
+.logo{display:flex;align-items:center;gap:9px}
+.logo-icon{width:30px;height:30px;background:var(--green);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:.9rem}
+.logo-text{font-family:'Playfair Display',serif;font-size:1.05rem}
+.logo-text b{color:var(--green);font-weight:700}
+.hdr-mid{display:flex;align-items:center;gap:9px}
+.call-timer{font-size:.76rem;color:var(--muted);font-weight:300;letter-spacing:.06em;display:none}
+.call-timer.show{display:block}
+.pill{display:flex;align-items:center;gap:5px;padding:4px 10px;border-radius:100px;font-size:.66rem;font-weight:500;border:1px solid;opacity:0;transition:opacity .4s}
+.pill.show{opacity:1}
+.pill.live{color:var(--green);border-color:rgba(61,255,160,.25);background:rgba(61,255,160,.07)}
+.pill.wait{color:#ffb340;border-color:rgba(255,179,64,.25);background:rgba(255,179,64,.07);animation:bpulse 1.4s infinite}
+@keyframes bpulse{0%,100%{opacity:1}50%{opacity:.5}}
+.pdot{width:5px;height:5px;border-radius:50%;background:currentColor}
+.pill.live .pdot{animation:bpulse .9s infinite}
+.hbtn{padding:7px 14px;border-radius:100px;border:1px solid var(--border);background:transparent;color:var(--muted);font-family:'Sora',sans-serif;font-size:.76rem;cursor:pointer;transition:all .2s;display:none}
+.hbtn:hover{background:var(--panel);color:var(--white)}
+.hbtn.show{display:block}
+
+/* ── Pages ── */
+.page{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:44px 20px;gap:28px;text-align:center}
+.page.hide{display:none!important}
+@keyframes up{from{opacity:0;transform:translateY(13px)}to{opacity:1;transform:none}}
+.anim{animation:up .45s ease}
+
+/* ── Landing ── */
+.eyebrow{font-size:.67rem;font-weight:500;letter-spacing:.2em;text-transform:uppercase;color:var(--green);margin-bottom:5px}
+.hero{font-family:'Playfair Display',serif;font-size:clamp(1.8rem,4.5vw,3.1rem);line-height:1.13;letter-spacing:-.02em;max-width:580px}
+.hero i{color:var(--green)}
+.sub{font-size:.88rem;color:var(--muted);max-width:400px;line-height:1.75;font-weight:300}
+.howrow{display:flex;align-items:center;gap:7px;flex-wrap:wrap;justify-content:center}
+.hw{padding:4px 12px;border-radius:100px;border:1px solid var(--border);background:var(--panel);font-size:.7rem;color:var(--muted)}
+.hwa{font-size:.68rem;color:var(--border)}
+.roles{display:flex;gap:13px}
+.role{flex:1;max-width:245px;background:var(--panel);border:1px solid var(--border);border-radius:var(--r);padding:20px 17px;cursor:pointer;transition:all .2s;text-align:left;position:relative;overflow:hidden}
+.role::before{content:'';position:absolute;inset:0;opacity:0;transition:opacity .3s;pointer-events:none}
+.role.sg::before{background:radial-gradient(circle at 50% 0%,rgba(61,255,160,.08),transparent 70%)}
+.role.ls::before{background:radial-gradient(circle at 50% 0%,rgba(61,184,255,.08),transparent 70%)}
+.role:hover{border-color:rgba(255,255,255,.12);transform:translateY(-2px)}
+.role:hover::before{opacity:1}
+.ri{width:40px;height:40px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:1.2rem;margin-bottom:11px}
+.role.sg .ri{background:rgba(61,255,160,.1)}.role.ls .ri{background:rgba(61,184,255,.1)}
+.rn{font-weight:600;font-size:.88rem;margin-bottom:3px}
+.rd{font-size:.74rem;color:var(--muted);line-height:1.6}
+.rtag{display:inline-block;margin-top:9px;padding:2px 8px;border-radius:100px;font-size:.64rem;font-weight:500}
+.role.sg .rtag{background:rgba(61,255,160,.1);color:var(--green)}.role.ls .rtag{background:rgba(61,184,255,.1);color:var(--blue)}
+
+/* ── Room Card ── */
+.rcard{background:var(--panel);border:1px solid var(--border);border-radius:var(--r);padding:26px 22px;width:100%;max-width:370px;display:flex;flex-direction:column;gap:13px}
+.rcard h2{font-family:'Playfair Display',serif;font-size:1.15rem;text-align:center}
+.rcard p{font-size:.78rem;color:var(--muted);text-align:center;line-height:1.6}
+.lbl{font-size:.63rem;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:5px}
+.idbox{display:flex;align-items:center;gap:7px;background:var(--surface);border:1px solid var(--border);border-radius:9px;padding:8px 11px}
+.idtxt{flex:1;font-size:.85rem;font-weight:500;letter-spacing:.03em;color:var(--green);font-family:monospace;word-break:break-all}
+.cpbtn{padding:3px 8px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--muted);font-size:.66rem;cursor:pointer;transition:all .2s;white-space:nowrap}
+.cpbtn:hover{background:var(--panel);color:var(--white)}
+.divdr{display:flex;align-items:center;gap:9px;color:var(--muted);font-size:.68rem}
+.divdr::before,.divdr::after{content:'';flex:1;height:1px;background:var(--border)}
+.inp{width:100%;background:var(--surface);border:1px solid var(--border);border-radius:9px;padding:10px 12px;font-family:'Sora',sans-serif;font-size:.86rem;color:var(--white);outline:none;transition:border-color .2s}
+.inp:focus{border-color:rgba(61,255,160,.4)}
+.inp::placeholder{color:rgba(239,236,234,.2)}
+.btnrow{display:flex;gap:8px}
+.btn{flex:1;display:flex;align-items:center;justify-content:center;gap:6px;padding:10px 15px;border-radius:100px;font-family:'Sora',sans-serif;font-size:.8rem;font-weight:500;cursor:pointer;border:none;transition:all .2s;white-space:nowrap}
+.btn.p{background:var(--green);color:#08080b}.btn.p:hover{filter:brightness(1.1);transform:translateY(-1px)}
+.btn.g{background:var(--panel);color:var(--white);border:1px solid var(--border)}.btn.g:hover{background:var(--surface)}
+.btn.d{background:rgba(255,82,114,.1);color:var(--red);border:1px solid rgba(255,82,114,.2)}.btn.d:hover{background:rgba(255,82,114,.18)}
+.btn.sm{flex:0 0 auto;padding:8px 13px;font-size:.75rem}
+.wrow{display:flex;align-items:center;gap:8px;justify-content:center;font-size:.78rem;color:var(--muted)}
+.wdot{width:6px;height:6px;border-radius:50%;background:#ffb340;animation:bpulse 1.1s infinite}
+/* share box */
+.sharebox{background:var(--surface);border:1px solid rgba(61,255,160,.18);border-radius:10px;padding:13px}
+.share-btns{display:flex;gap:7px;margin-top:9px;flex-wrap:wrap}
+.sbtn{flex:1;min-width:80px;padding:8px 10px;border-radius:100px;font-family:'Sora',sans-serif;font-size:.72rem;font-weight:500;cursor:pointer;border:1px solid var(--border);background:transparent;color:var(--white);transition:all .2s;text-align:center}
+.sbtn:hover{background:var(--panel)}
+.sbtn.main{background:var(--green);color:#08080b;border-color:var(--green)}.sbtn.main:hover{filter:brightness(1.1)}
+/* hidden */
+.gone{display:none!important}
+
+/* ── Call View ── */
+#callView{flex:1;display:flex;flex-direction:column;padding:13px 17px 17px;gap:11px}
+#callView.hide{display:none!important}
+.vgrid{display:grid;grid-template-columns:1fr 1fr;gap:11px;flex:1}
+
+/* ── Video Panel ── */
+.vpanel{position:relative;border-radius:var(--r);overflow:hidden;background:#050508;border:1px solid var(--border);aspect-ratio:4/3}
+.vpanel video,.vpanel .vc{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.vpanel video{transform:scaleX(-1);z-index:1}
+.vpanel .vc{transform:scaleX(-1);z-index:2;pointer-events:none}
+.vlbl{position:absolute;top:9px;left:9px;z-index:8;display:flex;align-items:center;gap:5px;background:rgba(0,0,0,.62);backdrop-filter:blur(8px);padding:4px 10px;border-radius:100px;font-size:.68rem;font-weight:500;border:1px solid rgba(255,255,255,.07)}
+.vdot{width:5px;height:5px;border-radius:50%}
+/* detection badge */
+.det{position:absolute;top:9px;right:9px;z-index:8;display:flex;align-items:center;gap:7px;background:rgba(8,8,11,.87);backdrop-filter:blur(12px);border:1px solid rgba(61,255,160,.25);border-radius:11px;padding:7px 10px;opacity:0;transition:opacity .22s;pointer-events:none}
+.det.show{opacity:1}
+.dchar{font-family:'Playfair Display',serif;font-size:1.7rem;color:var(--green);line-height:1;min-width:24px;text-align:center;transition:transform .13s}
+.dchar.pop{transform:scale(1.4);color:#fff}
+.dright{display:flex;flex-direction:column;gap:2px}
+.dcl{font-size:.58rem;color:var(--muted)}
+.dbar{width:52px;height:2px;background:rgba(255,255,255,.08);border-radius:3px;overflow:hidden}
+.dfill{height:100%;background:var(--green);border-radius:3px;transition:width .2s}
+.dsc{font-size:.57rem;color:var(--green)}
+/* hold ring */
+.hr{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:68px;height:68px;z-index:13;opacity:0;transition:opacity .18s;pointer-events:none}
+.hr.show{opacity:1}
+.hr svg{transform:rotate(-90deg)}
+.hcbg{fill:none;stroke:rgba(61,255,160,.1);stroke-width:4}
+.hcfg{fill:none;stroke:var(--green);stroke-width:4;stroke-dasharray:194;stroke-dashoffset:194;transition:stroke-dashoffset .1s linear;stroke-linecap:round}
+.hrlbl{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:.63rem;color:var(--green);font-weight:600}
+/* translation bubble */
+.tov{position:absolute;bottom:0;left:0;right:0;z-index:9;padding:0 9px 9px;pointer-events:none}
+.tbub{background:rgba(8,8,11,.89);backdrop-filter:blur(14px);border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:8px 11px}
+.tbubl{font-size:.57rem;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--green);margin-bottom:3px}
+.tbubt{font-size:.9rem;color:var(--white);line-height:1.4;word-break:break-word;min-height:1.3em}
+.cur{display:inline-block;width:2px;height:.82em;background:var(--green);vertical-align:text-bottom;margin-left:1px;animation:cblink 1s infinite}
+@keyframes cblink{0%,100%{opacity:1}50%{opacity:0}}
+/* placeholders */
+.vph{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:var(--muted);z-index:5;background:var(--surface)}
+.vph.hide{display:none}
+.vph-icon{font-size:1.7rem;opacity:.28}
+.vph p{font-size:.74rem}
+.pwait{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:9px;background:rgba(8,8,11,.82);backdrop-filter:blur(6px);z-index:6}
+.pwait.hide{display:none}
+.pwait-icon{font-size:1.6rem;opacity:.38}
+.pwait p{font-size:.76rem;color:var(--muted)}
+
+/* ── Transcript ── */
+.tbar{background:var(--panel);border:1px solid var(--border);border-radius:11px;padding:9px 13px;display:flex;align-items:flex-start;gap:10px}
+.tbar-lbl{font-size:.58rem;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--green);white-space:nowrap;padding-top:3px}
+.tbar-txt{flex:1;font-size:.84rem;color:var(--white);line-height:1.5;word-break:break-word;min-height:1.35em}
+.tbar-acts{display:flex;gap:5px;flex-shrink:0}
+.ta{padding:3px 9px;border-radius:100px;font-family:'Sora',sans-serif;font-size:.67rem;font-weight:500;cursor:pointer;border:1px solid var(--border);background:transparent;color:var(--muted);transition:all .18s}
+.ta:hover{background:var(--surface);color:var(--white)}
+
+/* ── Controls ── */
+.cbar{display:flex;align-items:center;justify-content:center;gap:8px}
+.cb{display:flex;align-items:center;justify-content:center;gap:5px;padding:8px 16px;border-radius:100px;font-family:'Sora',sans-serif;font-size:.78rem;font-weight:500;cursor:pointer;border:none;transition:all .18s;white-space:nowrap}
+.cb.p{background:var(--green);color:#08080b}.cb.p:hover{filter:brightness(1.1);transform:translateY(-1px)}
+.cb.g{background:var(--panel);color:var(--white);border:1px solid var(--border)}.cb.g:hover{background:var(--surface)}
+.cb.d{background:rgba(255,82,114,.1);color:var(--red);border:1px solid rgba(255,82,114,.2)}.cb.d:hover{background:rgba(255,82,114,.18)}
+.cb.ico{padding:8px;width:36px;height:36px}
+
+/* ── Toast ── */
+.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%) translateY(11px);background:var(--white);color:#08080b;padding:7px 17px;border-radius:100px;font-size:.75rem;font-weight:500;opacity:0;transition:all .26s;pointer-events:none;z-index:999;white-space:nowrap;box-shadow:0 8px 26px rgba(0,0,0,.5)}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
+@media(max-width:580px){.vgrid{grid-template-columns:1fr}.roles{flex-direction:column;align-items:center}header{padding:10px 13px}#callView{padding:9px 9px 13px}}
+</style>
+</head>
+<body>
+
+<!-- ── LOADER ── -->
+<div id="loader">
+  <div class="llo">Sign<span>Bridge</span></div>
+  <div class="ring"></div>
+  <div class="lsteps">
+    <div class="ls go" id="ls1">TensorFlow.js WebGL</div>
+    <div class="ls" id="ls2">Handpose neural network</div>
+    <div class="ls" id="ls3">ASL gesture library</div>
+    <div class="ls" id="ls4">PeerJS connection</div>
+  </div>
+  <div class="lnote" id="lnote">Loading — first visit takes ~20s to download the ML model</div>
+  <button class="retry-btn" id="retryBtn" onclick="location.reload()">↺ Retry</button>
+</div>
+
+<!-- ── HEADER ── -->
+<header>
+  <div class="logo">
+    <div class="logo-icon">🤟</div>
+    <div class="logo-text">Sign<b>Bridge</b></div>
+  </div>
+  <div class="hdr-mid">
+    <span class="call-timer" id="callTimer">00:00</span>
+    <div class="pill live" id="livePill"><div class="pdot"></div>LIVE</div>
+    <div class="pill wait" id="connPill" style="display:none"><div class="pdot"></div><span id="connTxt">Connecting…</span></div>
+  </div>
+  <button class="hbtn" id="endBtn" onclick="endCall()">✕ End Call</button>
+</header>
+
+<!-- ── PAGE: LANDING ── -->
+<div class="page anim" id="pgLand">
+  <div>
+    <p class="eyebrow">Real WebRTC · TF.js Handpose · PeerJS · No Server</p>
+    <h1 class="hero">Bridge the gap.<br><i>Sign, and be heard.</i></h1>
+  </div>
+  <p class="sub">Real peer-to-peer video call with live ASL translation. Works directly from GitHub Pages — no backend needed.</p>
+  <div class="howrow">
+    <span class="hw">Create room</span><span class="hwa">→</span>
+    <span class="hw">Share link</span><span class="hwa">→</span>
+    <span class="hw">Partner opens link</span><span class="hwa">→</span>
+    <span class="hw">Start signing 🤟</span>
+  </div>
+  <div class="roles">
+    <div class="role sg" onclick="pickRole('signer')">
+      <div class="ri">🤟</div>
+      <div class="rn">I use Sign Language</div>
+      <div class="rd">Your hands tracked by real neural network. ASL letters detected live.</div>
+      <span class="rtag">ASL Signer</span>
+    </div>
+    <div class="role ls" onclick="pickRole('listener')">
+      <div class="ri">💬</div>
+      <div class="rn">I'm the listener</div>
+      <div class="rd">See translated text overlaid on signer's video, read aloud by TTS.</div>
+      <span class="rtag">Listener</span>
+    </div>
+  </div>
+</div>
+
+<!-- ── PAGE: ROOM ── -->
+<div class="page hide" id="pgRoom">
+  <div class="rcard anim">
+    <h2 id="rTitle">Set Up Call</h2>
+
+    <!-- Create section -->
+    <div id="secC" style="display:flex;flex-direction:column;gap:11px">
+      <div>
+        <div class="lbl">Your Room ID</div>
+        <div class="idbox">
+          <span class="idtxt" id="myId">—</span>
+          <button class="cpbtn" onclick="copyId()">Copy</button>
+        </div>
+      </div>
+      <button class="btn p" onclick="createRoom()">✦ Create Room &amp; Get Invite Link</button>
+    </div>
+
+    <div class="divdr">or join with a Room ID</div>
+
+    <!-- Join section -->
+    <div style="display:flex;flex-direction:column;gap:9px">
+      <div>
+        <div class="lbl">Paste partner's Room ID</div>
+        <input class="inp" id="joinInp" placeholder="Paste Room ID here" onkeydown="if(event.key==='Enter')joinRoom()">
+      </div>
+      <div class="btnrow">
+        <button class="btn g" onclick="goHome()">← Back</button>
+        <button class="btn p" onclick="joinRoom()">Join Room →</button>
+      </div>
+    </div>
+
+    <!-- Waiting / share section -->
+    <div id="secW" class="gone" style="display:flex;flex-direction:column;gap:11px">
+      <div class="wrow"><div class="wdot"></div>Waiting for partner to join…</div>
+
+      <!-- Share box -->
+      <div class="sharebox">
+        <div class="lbl" style="color:var(--green);margin-bottom:7px">📤 Send this invite link to your partner</div>
+        <div class="idbox" style="background:var(--bg)">
+          <span class="idtxt" id="shareLink" style="font-size:.68rem;letter-spacing:0">—</span>
+          <button class="cpbtn" onclick="copyLink()">Copy</button>
+        </div>
+        <div class="share-btns">
+          <button class="sbtn main" onclick="shareNative()">↗ Share</button>
+          <button class="sbtn" onclick="shareWA()">💬 WhatsApp</button>
+          <button class="sbtn" onclick="copyLink()">⎘ Copy Link</button>
+        </div>
+      </div>
+
+      <div>
+        <div class="lbl">Or share just the Room ID</div>
+        <div class="idbox">
+          <span class="idtxt" id="waitId"></span>
+          <button class="cpbtn" onclick="copyId()">Copy</button>
+        </div>
+      </div>
+      <button class="btn g sm" onclick="cancelWait()" style="align-self:center">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── CALL VIEW ── -->
+<div id="callView" class="hide">
+  <div class="vgrid">
+    <!-- Local -->
+    <div class="vpanel">
+      <video id="lVid" autoplay playsinline muted></video>
+      <canvas id="lCvs" class="vc"></canvas>
+      <div class="vlbl"><div class="vdot" style="background:var(--green)"></div><span id="lLbl">You</span></div>
+      <div class="det" id="detBadge">
+        <div class="dchar" id="dChar">—</div>
+        <div class="dright"><div class="dcl">Fingerpose</div><div class="dbar"><div class="dfill" id="dFill" style="width:0"></div></div><div class="dsc" id="dSc">—</div></div>
+      </div>
+      <div class="hr" id="hr">
+        <svg width="68" height="68" viewBox="0 0 68 68"><circle class="hcbg" cx="34" cy="34" r="30"/><circle class="hcfg" id="hcfg" cx="34" cy="34" r="30"/></svg>
+        <div class="hrlbl" id="hrlbl"></div>
+      </div>
+      <div class="vph" id="lPh"><div class="vph-icon">📷</div><p>Camera starting…</p></div>
+      <div class="tov gone" id="lOv"><div class="tbub"><div class="tbubl">🔤 You're signing</div><div class="tbubt" id="lBub"><span class="cur"></span></div></div></div>
+    </div>
+    <!-- Remote -->
+    <div class="vpanel">
+      <video id="rVid" autoplay playsinline></video>
+      <div class="vlbl"><div class="vdot" style="background:var(--blue)"></div><span id="rLbl">Partner</span></div>
+      <div class="pwait" id="pWait"><div class="pwait-icon">👥</div><p>Waiting for partner…</p></div>
+      <div class="tov gone" id="rOv"><div class="tbub"><div class="tbubl">🔤 Partner signing</div><div class="tbubt" id="rBub"><span class="cur"></span></div></div></div>
+    </div>
+  </div>
+  <!-- Transcript -->
+  <div class="tbar">
+    <div class="tbar-lbl">Transcript</div>
+    <div class="tbar-txt" id="tTxt">Waiting for signs…</div>
+    <div class="tbar-acts">
+      <button class="ta" onclick="speakT()">🔊</button>
+      <button class="ta" onclick="copyT()">Copy</button>
+      <button class="ta" onclick="delLast()">⌫</button>
+      <button class="ta" onclick="clearT()">Clear</button>
+    </div>
+  </div>
+  <!-- Controls -->
+  <div class="cbar">
+    <button class="cb ico g" id="micBtn" onclick="toggleMic()">🎤</button>
+    <button class="cb ico g" id="camBtn" onclick="toggleCam()">📷</button>
+    <button class="cb d" onclick="endCall()">✕ End Call</button>
+    <button class="cb g" onclick="speakT()">🔊 Speak</button>
+    <button class="cb ico g" onclick="delLast()">⌫</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+'use strict';
+// ═══════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════
+let peer=null, conn=null, mediaConn=null, localStream=null;
+let handModel=null, gestEst=null;
+let myRole=null, detecting=false, raf=null;
+let transcript='', lastLetter=null, holdCount=0;
+const HOLD=14;
+let micMuted=false, camOff=false, timerInt=null;
+let fskip=0; // frame skip counter
+
+// ═══════════════════════════════════════════
+// TOAST
+// ═══════════════════════════════════════════
+let _tt;
+function toast(msg,dur=2600){
+  clearTimeout(_tt);
+  const el=document.getElementById('toast');
+  el.textContent=msg; el.classList.add('show');
+  _tt=setTimeout(()=>el.classList.remove('show'),dur);
+}
+
+// ═══════════════════════════════════════════
+// ASL GESTURES
+// ═══════════════════════════════════════════
+function buildGestures(){
+  const {GestureDescription:GD,Finger:F,FingerCurl:FC,FingerDirection:FD}=fp;
+  const NC=FC.NoCurl,HC=FC.HalfCurl,FL=FC.FullCurl;
+  const VU=FD.VerticalUp,VD=FD.VerticalDown,HL=FD.HorizontalLeft,HR=FD.HorizontalRight;
+  const DUL=FD.DiagonalUpLeft,DUR=FD.DiagonalUpRight,DDL=FD.DiagonalDownLeft;
+  const T=F.Thumb,I=F.Index,M=F.Middle,R=F.Ring,P=F.Pinky;
+  const mk=(n,fn)=>{const d=new GD(n);fn(d);return d;};
+  const c=(d,fs,v,w=1)=>fs.forEach(f=>d.addCurl(f,v,w));
+  const dr=(d,fs,v,w=1)=>fs.forEach(f=>d.addDirection(f,v,w));
+  return[
+    mk('A',d=>{d.addCurl(T,NC,1);d.addCurl(T,HC,.9);c(d,[I,M,R,P],FL,1);c(d,[I,M,R,P],HC,.8);}),
+    mk('B',d=>{d.addCurl(T,FL,1);c(d,[I,M,R,P],NC,1);dr(d,[I,M,R,P],VU,1);dr(d,[I,M,R,P],DUR,.8);}),
+    mk('C',d=>{c(d,[T,I,M,R,P],HC,1);c(d,[T,I,M,R,P],NC,.7);}),
+    mk('D',d=>{d.addCurl(I,NC,1);d.addDirection(I,VU,1);d.addCurl(T,HC,1);c(d,[M,R,P],FL,1);c(d,[M,R,P],HC,.8);}),
+    mk('E',d=>{c(d,[T,I,M,R,P],FL,1);c(d,[T,I,M,R,P],HC,.8);}),
+    mk('F',d=>{d.addCurl(T,HC,1);d.addCurl(I,HC,1);d.addCurl(I,FL,.8);c(d,[M,R,P],NC,1);dr(d,[M,R,P],VU,1);}),
+    mk('G',d=>{d.addCurl(I,NC,1);dr(d,[I],HL,1);dr(d,[I],HR,.9);d.addCurl(T,NC,1);c(d,[M,R,P],FL,1);}),
+    mk('H',d=>{c(d,[I,M],NC,1);dr(d,[I,M],HL,1);dr(d,[I,M],HR,.9);d.addCurl(T,FL,1);c(d,[R,P],FL,1);}),
+    mk('I',d=>{d.addCurl(P,NC,1);d.addDirection(P,VU,1);d.addDirection(P,DUR,.8);c(d,[T,I,M,R],FL,1);c(d,[T,I,M,R],HC,.8);}),
+    mk('K',d=>{d.addCurl(I,NC,1);d.addDirection(I,VU,1);d.addCurl(M,NC,1);d.addDirection(M,DUR,1);d.addCurl(T,NC,1);c(d,[R,P],FL,1);}),
+    mk('L',d=>{d.addCurl(I,NC,1);d.addDirection(I,VU,1);d.addCurl(T,NC,1);d.addDirection(T,HL,1);d.addDirection(T,HR,.9);c(d,[M,R,P],FL,1);}),
+    mk('M',d=>{d.addCurl(T,HC,1);d.addCurl(T,FL,.8);c(d,[I,M,R],HC,1);c(d,[I,M,R],FL,.8);d.addCurl(P,FL,1);}),
+    mk('N',d=>{d.addCurl(T,HC,1);c(d,[I,M],HC,1);c(d,[I,M],FL,.8);c(d,[R,P],FL,1);}),
+    mk('O',d=>{c(d,[T,I,M,R,P],HC,1);dr(d,[T,I,M,R,P],DDL,.9);dr(d,[T,I,M,R,P],VD,.8);}),
+    mk('P',d=>{d.addCurl(I,NC,1);d.addDirection(I,VD,1);d.addDirection(I,DDL,.9);d.addCurl(M,NC,1);d.addCurl(T,NC,1);c(d,[R,P],FL,1);}),
+    mk('Q',d=>{d.addCurl(I,NC,1);d.addDirection(I,VD,1);d.addCurl(T,NC,1);d.addDirection(T,VD,1);c(d,[M,R,P],FL,1);}),
+    mk('R',d=>{c(d,[I,M],NC,1);dr(d,[I,M],VU,1);c(d,[T,R,P],FL,1);c(d,[T,R,P],HC,.8);}),
+    mk('S',d=>{c(d,[I,M,R,P],FL,1);d.addCurl(T,HC,1);d.addCurl(T,NC,.8);}),
+    mk('T',d=>{d.addCurl(T,NC,1);d.addCurl(T,HC,.9);d.addCurl(I,FL,1);d.addCurl(I,HC,.9);c(d,[M,R,P],FL,1);}),
+    mk('U',d=>{c(d,[I,M],NC,1);dr(d,[I,M],VU,1);c(d,[T,R,P],FL,1);c(d,[T,R,P],HC,.8);}),
+    mk('V',d=>{d.addCurl(I,NC,1);d.addDirection(I,VU,1);d.addDirection(I,DUR,.9);d.addCurl(M,NC,1);d.addDirection(M,VU,1);d.addDirection(M,DUL,.9);c(d,[T,R,P],FL,1);c(d,[T,R,P],HC,.8);}),
+    mk('W',d=>{c(d,[I,M,R],NC,1);dr(d,[I,M,R],VU,1);d.addCurl(T,FL,1);d.addCurl(P,FL,1);}),
+    mk('X',d=>{d.addCurl(I,HC,1);c(d,[T,M,R,P],FL,1);c(d,[T,M,R,P],HC,.7);}),
+    mk('Y',d=>{d.addCurl(T,NC,1);d.addDirection(T,HL,.9);d.addCurl(P,NC,1);d.addDirection(P,VU,.9);d.addDirection(P,DUR,.8);c(d,[I,M,R],FL,1);}),
+    mk('SPACE',d=>{c(d,[T,I,M,R,P],NC,1);dr(d,[T,I,M,R,P],VU,1);dr(d,[T,I,M,R,P],DUR,.7);dr(d,[T,I,M,R,P],DUL,.7);}),
+  ];
+}
+
+// ═══════════════════════════════════════════
+// SKELETON DRAW
+// ═══════════════════════════════════════════
+const BONES=[[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
+function drawHand(ctx,pts){
+  ctx.strokeStyle='rgba(61,255,160,.5)';ctx.lineWidth=2;
+  for(const[a,b]of BONES){if(!pts[a]||!pts[b])continue;ctx.beginPath();ctx.moveTo(pts[a][0],pts[a][1]);ctx.lineTo(pts[b][0],pts[b][1]);ctx.stroke();}
+  for(let i=0;i<pts.length;i++){if(!pts[i])continue;ctx.beginPath();ctx.arc(pts[i][0],pts[i][1],i%4===0?4.5:2.5,0,Math.PI*2);ctx.fillStyle=i===0?'rgba(255,255,255,.7)':i%4===0?'#3dffa0':'rgba(61,255,160,.65)';ctx.fill();}
+}
+
+// ═══════════════════════════════════════════
+// DETECTION LOOP (signer only)
+// ═══════════════════════════════════════════
+async function detLoop(){
+  if(!detecting)return;
+  const vid=document.getElementById('lVid');
+  const cvs=document.getElementById('lCvs');
+  const ctx=cvs.getContext('2d');
+  // Process every 2nd frame to save CPU
+  fskip=(fskip+1)%2;
+  if(fskip===0&&vid.readyState>=2){
+    cvs.width=vid.videoWidth||320;cvs.height=vid.videoHeight||240;
+    ctx.clearRect(0,0,cvs.width,cvs.height);
+    try{
+      const preds=await handModel.estimateHands(vid);
+      if(preds.length>0){
+        const lm=preds[0].landmarks;
+        drawHand(ctx,lm);
+        const res=gestEst.estimate(lm,7.5);
+        if(res.gestures.length>0){
+          const best=res.gestures.reduce((a,b)=>a.score>b.score?a:b);
+          const letter=best.name==='SPACE'?' ':best.name;
+          showDet(letter,best.score);
+          holdSign(letter);
+        }else{clearDet();}
+      }else{clearDet();ctx.clearRect(0,0,cvs.width,cvs.height);}
+    }catch(e){/* skip */}
+  }
+  raf=requestAnimationFrame(detLoop);
+}
+
+function showDet(l,s){
+  document.getElementById('detBadge').classList.add('show');
+  document.getElementById('dChar').textContent=l===' '?'·':l;
+  document.getElementById('dFill').style.width=(s/10*100)+'%';
+  document.getElementById('dSc').textContent=s.toFixed(1)+'/10';
+}
+function clearDet(){
+  document.getElementById('detBadge').classList.remove('show');
+  document.getElementById('hr').classList.remove('show');
+  lastLetter=null;holdCount=0;
+}
+function holdSign(letter){
+  const ring=document.getElementById('hr');
+  const circ=document.getElementById('hcfg');
+  const lbl=document.getElementById('hrlbl');
+  if(letter===lastLetter){
+    holdCount++;
+    const pct=Math.min(holdCount/HOLD,1);
+    ring.classList.add('show');
+    circ.style.strokeDashoffset=194-194*pct;
+    lbl.textContent=letter===' '?'·':letter;
+    if(holdCount>=HOLD){
+      commitLetter(letter);
+      holdCount=0;lastLetter=null;
+      ring.classList.remove('show');circ.style.strokeDashoffset=194;
+      const dc=document.getElementById('dChar');
+      dc.classList.add('pop');setTimeout(()=>dc.classList.remove('pop'),180);
+    }
+  }else{lastLetter=letter;holdCount=1;ring.classList.remove('show');circ.style.strokeDashoffset=194;}
+}
+
+// ═══════════════════════════════════════════
+// TRANSCRIPT
+// ═══════════════════════════════════════════
+function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function syncUI(){
+  const d=esc(transcript.slice(-70));
+  const c='<span class="cur"></span>';
+  document.getElementById('lBub').innerHTML=d+c;
+  document.getElementById('rBub').innerHTML=d+c;
+  document.getElementById('tTxt').textContent=transcript||'Waiting for signs…';
+}
+function commitLetter(ch){
+  transcript+=ch; syncUI();
+  if(conn&&conn.open)conn.send({type:'letter',transcript});
+  toast(ch===' '?'Space':`"${ch}"`,500);
+}
+function clearT(){transcript='';syncUI();conn?.open&&conn.send({type:'clear'});toast('Cleared');}
+function delLast(){if(!transcript)return;transcript=transcript.slice(0,-1);syncUI();conn?.open&&conn.send({type:'transcript',transcript});}
+function speakT(){if(!transcript.trim())return toast('Nothing to speak');const u=new SpeechSynthesisUtterance(transcript);u.rate=.95;speechSynthesis.cancel();speechSynthesis.speak(u);toast('Speaking…');}
+function copyT(){if(!transcript)return toast('Nothing to copy');navigator.clipboard.writeText(transcript).then(()=>toast('Copied!'));}
+
+// ═══════════════════════════════════════════
+// PEERJS
+// ═══════════════════════════════════════════
+function initPeer(){
+  // Use the reliable PeerJS cloud broker (HTTPS, works on GitHub Pages)
+  peer=new Peer({
+    host:'0.peerjs.com', port:443, path:'/', secure:true,
+    debug:0,
+    config:{iceServers:[
+      {urls:'stun:stun.l.google.com:19302'},
+      {urls:'stun:stun1.l.google.com:19302'},
+      {urls:'stun:stun2.l.google.com:19302'},
+      {urls:'stun:stun3.l.google.com:19302'},
+    ]}
+  });
+
+  peer.on('open',id=>{
+    console.log('Peer open:',id);
+    document.getElementById('myId').textContent=id;
+    document.getElementById('waitId').textContent=id;
+  });
+
+  // Incoming media call
+  peer.on('call',async inCall=>{
+    mediaConn=inCall;
+    if(!localStream) await enterAsCreator(inCall.peer);
+    inCall.answer(localStream);
+    inCall.on('stream',rs=>{
+      document.getElementById('rVid').srcObject=rs;
+      document.getElementById('pWait').classList.add('hide');
+      onConnected();
+    });
+    inCall.on('close',onPeerLeft);
+    inCall.on('error',e=>console.error('call err',e));
+  });
+
+  // Incoming data
+  peer.on('connection',inc=>{conn=inc;setupData();});
+
+  peer.on('error',e=>{
+    if(e.type==='peer-unavailable'){toast('Room ID not found — double-check it');return;}
+    console.error('Peer error:',e.type,e);
+    toast('Connection error: '+e.type);
+  });
+
+  peer.on('disconnected',()=>{
+    toast('Reconnecting to PeerJS…');
+    try{peer.reconnect();}catch(e){}
+  });
+}
+
+function setupData(){
+  if(!conn)return;
+  conn.on('data',data=>{
+    if(myRole==='listener'){
+      if(data.type==='letter'||data.type==='transcript'){
+        transcript=data.transcript||transcript+(data.letter||'');
+        syncUI();
+      }
+      if(data.type==='clear'){transcript='';syncUI();}
+    }
+  });
+  conn.on('close',onPeerLeft);
+  conn.on('error',e=>console.error('data err',e));
+}
+
+// ═══════════════════════════════════════════
+// CAMERA
+// ═══════════════════════════════════════════
+async function startCamera(){
+  try{
+    localStream=await navigator.mediaDevices.getUserMedia({
+      video:{width:{ideal:320},height:{ideal:240},facingMode:'user',frameRate:{ideal:15,max:20}},
+      audio:true
+    });
+    const v=document.getElementById('lVid');
+    v.srcObject=localStream;
+    await new Promise(r=>v.onloadedmetadata=r);
+    document.getElementById('lPh').classList.add('hide');
+    return true;
+  }catch(e){
+    toast('Camera denied — allow camera access and refresh');
+    return false;
+  }
+}
+
+// ═══════════════════════════════════════════
+// CALL FLOW
+// ═══════════════════════════════════════════
+function onConnected(){
+  document.getElementById('livePill').classList.add('show');
+  document.getElementById('connPill').style.display='none';
+  if(myRole==='signer'){
+    document.getElementById('lOv').classList.remove('gone');
+  }else{
+    document.getElementById('rOv').classList.remove('gone');
+  }
+  startTimer();
+  toast('🎉 Connected! '+(myRole==='signer'?'Start signing — hold each letter ~1s.':'Waiting for signer…'),4000);
+}
+
+function onPeerLeft(){
+  document.getElementById('pWait').classList.remove('hide');
+  document.getElementById('pWait').innerHTML='<div class="pwait-icon">📵</div><p>Partner left the call</p>';
+  document.getElementById('livePill').classList.remove('show');
+  stopTimer();
+  toast('Partner disconnected');
+}
+
+// ═══════════════════════════════════════════
+// NAVIGATION
+// ═══════════════════════════════════════════
+function showPage(id){
+  document.getElementById('pgLand').classList.toggle('hide',id!=='pgLand');
+  document.getElementById('pgRoom').classList.toggle('hide',id!=='pgRoom');
+  document.getElementById('callView').classList.toggle('hide',id!=='callView');
+  document.getElementById('endBtn').classList.toggle('show',id==='callView');
+}
+
+function goHome(){endCall();showPage('pgLand');}
+
+function pickRole(role){
+  myRole=role;
+  if(!peer||!peer.id){toast('PeerJS still connecting — wait 1s and try again');return;}
+  document.getElementById('rTitle').textContent=role==='signer'?'You\'re the Signer':'You\'re the Listener';
+  // If opened via invite link, pre-fill
+  if(window._autoJoin){
+    document.getElementById('joinInp').value=window._autoJoin;
+  }
+  showSec('secC');
+  showPage('pgRoom');
+}
+
+function showSec(id){
+  document.getElementById('secC').style.display=id==='secC'?'flex':'none';
+  document.getElementById('secC').style.flexDirection='column';
+  document.getElementById('secC').style.gap='11px';
+  document.getElementById('secW').classList.toggle('gone',id!=='secW');
+}
+
+function getLink(){
+  return window.location.href.split('?')[0]+'?join='+encodeURIComponent(peer.id);
+}
+function copyId(){navigator.clipboard.writeText(peer?.id||'').then(()=>toast('Room ID copied!'));}
+function copyLink(){navigator.clipboard.writeText(getLink()).then(()=>toast('Invite link copied! Send it to your partner.'));}
+function shareNative(){
+  if(navigator.share){navigator.share({title:'Join my SignBridge call',url:getLink()}).catch(()=>copyLink());}
+  else copyLink();
+}
+function shareWA(){
+  window.open('https://wa.me/?text='+encodeURIComponent('Join my ASL video call: '+getLink()),'_blank');
+}
+
+function createRoom(){
+  if(!peer?.id){toast('Still connecting… try again in a second');return;}
+  document.getElementById('shareLink').textContent=getLink();
+  document.getElementById('waitId').textContent=peer.id;
+  showSec('secW');
+  toast('Room ready! Share the invite link with your partner.',3500);
+}
+
+function cancelWait(){showSec('secC');}
+
+// Auto-detect ?join= in URL
+function checkInvite(){
+  const id=new URLSearchParams(window.location.search).get('join');
+  if(!id)return;
+  window._autoJoin=id;
+  document.getElementById('joinInp').value=id;
+  toast('📩 Invited! Choose your role below, then Join Room.',5000);
+}
+
+async function joinRoom(){
+  const targetId=document.getElementById('joinInp').value.trim();
+  if(!targetId){toast('Enter your partner\'s Room ID');return;}
+  if(!peer?.id){toast('Still connecting to PeerJS…');return;}
+
+  showPage('callView');
+  document.getElementById('lLbl').textContent=myRole==='signer'?'You (Signer)':'You (Listener)';
+  document.getElementById('rLbl').textContent=myRole==='signer'?'Listener':'Signer';
+
+  const ok=await startCamera();
+  if(!ok)return;
+
+  if(myRole==='signer'){detecting=true;detLoop();}
+
+  // Show connecting status
+  const cp=document.getElementById('connPill');
+  cp.style.display='flex';
+  document.getElementById('connTxt').textContent='Connecting to partner…';
+
+  // Data channel
+  conn=peer.connect(targetId,{reliable:true});
+  conn.on('open',()=>{console.log('data open');setupData();});
+  conn.on('error',e=>{console.error('data conn err',e);toast('Data connection error');});
+
+  // Video call
+  mediaConn=peer.call(targetId,localStream);
+  mediaConn.on('stream',rs=>{
+    document.getElementById('rVid').srcObject=rs;
+    document.getElementById('pWait').classList.add('hide');
+    onConnected();
+  });
+  mediaConn.on('close',onPeerLeft);
+  mediaConn.on('error',e=>{
+    console.error('media err',e);
+    toast('Video connection failed — check Room ID and retry');
+  });
+
+  // Timeout if partner doesn't answer
+  setTimeout(()=>{
+    if(!document.getElementById('pWait').classList.contains('hide')){
+      toast('No response — make sure partner has the app open',5000);
+    }
+  },15000);
+}
+
+async function enterAsCreator(callerId){
+  showPage('callView');
+  document.getElementById('lLbl').textContent=myRole==='signer'?'You (Signer)':'You (Listener)';
+  document.getElementById('rLbl').textContent=myRole==='signer'?'Listener':'Signer';
+  const ok=await startCamera();
+  if(!ok)return;
+  if(myRole==='signer'){detecting=true;detLoop();}
+  const cp=document.getElementById('connPill');
+  cp.style.display='flex';
+  document.getElementById('connTxt').textContent='Partner connecting…';
+  const db=peer.connect(callerId,{reliable:true});
+  db.on('open',()=>{conn=db;setupData();});
+}
+
+function endCall(){
+  detecting=false;
+  if(raf)cancelAnimationFrame(raf);
+  mediaConn?.close();conn?.close();
+  mediaConn=null;conn=null;
+  localStream?.getTracks().forEach(t=>t.stop());localStream=null;
+  document.getElementById('lVid').srcObject=null;
+  document.getElementById('rVid').srcObject=null;
+  document.getElementById('lCvs').getContext('2d').clearRect(0,0,9999,9999);
+  document.getElementById('lPh').classList.remove('hide');
+  document.getElementById('pWait').classList.remove('hide');
+  document.getElementById('pWait').innerHTML='<div class="pwait-icon">👥</div><p>Waiting for partner…</p>';
+  document.getElementById('livePill').classList.remove('show');
+  document.getElementById('connPill').style.display='none';
+  document.getElementById('lOv').classList.add('gone');
+  document.getElementById('rOv').classList.add('gone');
+  clearDet();stopTimer();clearT();
+  lastLetter=null;holdCount=0;
+}
+
+// ═══════════════════════════════════════════
+// MEDIA CONTROLS
+// ═══════════════════════════════════════════
+function toggleMic(){micMuted=!micMuted;localStream?.getAudioTracks().forEach(t=>t.enabled=!micMuted);document.getElementById('micBtn').textContent=micMuted?'🔇':'🎤';toast(micMuted?'Mic muted':'Mic on');}
+function toggleCam(){camOff=!camOff;localStream?.getVideoTracks().forEach(t=>t.enabled=!camOff);document.getElementById('camBtn').textContent=camOff?'🚫':'📷';toast(camOff?'Camera off':'Camera on');}
+
+// ═══════════════════════════════════════════
+// TIMER
+// ═══════════════════════════════════════════
+function startTimer(){
+  const s=Date.now(),el=document.getElementById('callTimer');
+  el.classList.add('show');
+  timerInt=setInterval(()=>{
+    const t=Math.floor((Date.now()-s)/1000);
+    el.textContent=String(Math.floor(t/60)).padStart(2,'0')+':'+String(t%60).padStart(2,'0');
+  },1000);
+}
+function stopTimer(){clearInterval(timerInt);document.getElementById('callTimer').classList.remove('show');}
+
+// ═══════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════
+function ls(n,state){const el=document.getElementById('ls'+n);if(el){el.classList.remove('go','ok');el.classList.add(state);}}
+
+async function init(){
+  const loader=document.getElementById('loader');
+  const note=document.getElementById('lnote');
+  const retryBtn=document.getElementById('retryBtn');
+
+  function fail(msg){
+    note.textContent='⚠ '+msg;
+    note.style.color='var(--red)';
+    retryBtn.classList.add('show');
+  }
+
+  try{
+    // Step 1: TF.js
+    ls(1,'go'); note.textContent='Initialising TensorFlow.js WebGL…';
+    try{
+      await tf.setBackend('webgl');
+      await tf.ready();
+    }catch(e){
+      // Fallback to CPU backend
+      note.textContent='WebGL unavailable — falling back to CPU (slower)…';
+      await tf.setBackend('cpu');
+      await tf.ready();
+    }
+    ls(1,'ok'); ls(2,'go');
+    note.textContent='Downloading Handpose model (~10MB, first visit only)…';
+
+    // Step 2: Handpose — with retry on failure
+    let attempts=0;
+    while(!handModel && attempts<3){
+      attempts++;
+      try{
+        handModel=await handpose.load({
+          detectionConfidence:0.8,
+          maxContinuousChecks:13,
+          iouThreshold:0.3,
+          scoreThreshold:0.75,
+        });
+      }catch(e){
+        console.warn('Handpose load attempt',attempts,'failed:',e);
+        if(attempts<3){
+          note.textContent=`Model load failed (attempt ${attempts}/3) — retrying…`;
+          await new Promise(r=>setTimeout(r,2000));
+        }else{
+          throw new Error('Handpose model failed to load after 3 attempts. Check your internet connection.');
+        }
+      }
+    }
+    ls(2,'ok'); ls(3,'go');
+    note.textContent='Building ASL gesture library (26 signs)…';
+
+    // Step 3: Fingerpose
+    await new Promise(r=>setTimeout(r,80));
+    gestEst=new fp.GestureEstimator(buildGestures());
+    ls(3,'ok'); ls(4,'go');
+    note.textContent='Connecting to PeerJS cloud signaling…';
+
+    // Step 4: PeerJS with retry
+    initPeer();
+    await new Promise((res,rej)=>{
+      peer.on('open',res);
+      peer.on('error',e=>{
+        // peer-unavailable is a normal error (calling wrong ID), not a fatal init error
+        if(e.type!=='peer-unavailable') rej(new Error('PeerJS: '+e.type));
+      });
+      setTimeout(()=>rej(new Error('PeerJS connection timed out. The peerjs.com server may be temporarily unavailable — try refreshing.')),15000);
+    });
+    ls(4,'ok');
+    note.textContent='Ready!';
+    await new Promise(r=>setTimeout(r,300));
+
+  }catch(e){
+    console.error('Init failed:',e);
+    fail(e.message||String(e));
+    return;
+  }
+
+  loader.classList.add('out');
+  setTimeout(()=>loader.style.display='none',600);
+  checkInvite();
+}
+
+init();
+</script>
+</body>
+</html>
