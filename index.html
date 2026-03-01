@@ -881,5 +881,18 @@ async function init(){
 
 init();
 </script>
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+
+<script>
+const socket = io("https://webrtc-server-rhu8.onrender.com");
+
+const roomId = new URLSearchParams(window.location.search).get("room") || "default";
+
+socket.emit("join-room", roomId);
+
+socket.on("user-joined", () => {
+    console.log("Another user joined!");
+});
+</script>
 </body>
 </html>
