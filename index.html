@@ -881,18 +881,18 @@ async function init(){
 
 init();
 </script>
-  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
-
 <script>
-const socket = io("https://webrtc-server-rhu8.onrender.com");
+// Override PeerJS to use your own Render server
+const originalPeer = window.Peer;
 
-const roomId = new URLSearchParams(window.location.search).get("room") || "default";
-
-socket.emit("join-room", roomId);
-
-socket.on("user-joined", () => {
-    console.log("Another user joined!");
-});
+window.Peer = function(...args) {
+  return new originalPeer({
+    host: 'webrtc-server-rhu8.onrender.com',
+    port: 443,
+    path: '/peerjs',
+    secure: true
+  });
+};
 </script>
 </body>
 </html>
